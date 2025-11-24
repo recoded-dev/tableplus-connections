@@ -7,6 +7,8 @@ import (
     "flag"
     "fmt"
     "os"
+    "os/exec"
+    "runtime"
     "strconv"
 
     "github.com/1password/onepassword-sdk-go"
@@ -58,6 +60,12 @@ func main() {
     }
 
     fmt.Println("Exported")
+
+    err = openWithApp("TablePlus", outputFile + ".tableplusconnection")
+
+    if (err != nil) {
+        panic(err)
+    }
 }
 
 func getDatabaseItems() ([]*onepassword.Item, error) {
@@ -192,6 +200,18 @@ func convertConnections(in []*AvailableConnection) []*OutputConnection {
     }
 
     return out
+}
+
+func openWithApp(app, target string) error {
+	if runtime.GOOS != "darwin" {
+		return fmt.Errorf("openWithApp is only implemented for macOS")
+	}
+
+	cmd := exec.Command("open", "-a", app, target)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	return cmd.Run()
 }
 
 type AvailableConnection struct {
