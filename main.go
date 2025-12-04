@@ -12,6 +12,7 @@ import (
     "runtime"
     "slices"
     "strconv"
+    "strings"
 
     "github.com/1password/onepassword-sdk-go"
     "github.com/RNCryptor/RNCryptor-go"
@@ -206,6 +207,7 @@ func parseAvailableConnections(items []*onepassword.Item, vaults []*onepassword.
         var port *int
         var username *string
         var password *string
+        passwordIsCommand := false
 
         for _, field := range item.Fields {
             if (field.ID == "hostname" && address == nil) {
@@ -226,6 +228,8 @@ func parseAvailableConnections(items []*onepassword.Item, vaults []*onepassword.
 
             if (field.ID == "password" && password == nil) {
                 password = &field.Value
+
+                passwordIsCommand = strings.ToLower(field.Title) == "password command"
             }
         }
 
@@ -241,6 +245,7 @@ func parseAvailableConnections(items []*onepassword.Item, vaults []*onepassword.
             Port: *port,
             Username: *username,
             Password: *password,
+            PasswordIsCommand: passwordIsCommand,
         })
     }
 
@@ -251,13 +256,20 @@ func convertConnections(in []*AvailableConnection) []*OutputConnection {
     out := make([]*OutputConnection, 0, len(in))
 
     for _, c := range in {
+        databasePasswordMode := 0
+
+        if c.PasswordIsCommand {
+            databasePasswordMode = 3
+        }
+
         out = append(out, &OutputConnection{
-            DatabaseUser:     c.Username,
-            ServerAddress:    c.Address,
-            DatabaseHost:     c.Address,
-            ConnectionName:   c.Name,
-            DatabasePassword: c.Password,
-            DatabasePort:     fmt.Sprintf("%d", c.Port),
+            DatabaseUser:         c.Username,
+            ServerAddress:        c.Address,
+            DatabaseHost:         c.Address,
+            ConnectionName:       c.Name,
+            DatabasePassword:     c.Password,
+            DatabasePasswordMode: databasePasswordMode,
+            DatabasePort:         fmt.Sprintf("%d", c.Port),
 
             // Defaults that match your sample JSON, TODO: fix
             Driver:              "PostgreSQL",
@@ -293,13 +305,14 @@ func openWithApp(app, target string) error {
 }
 
 type AvailableConnection struct {
-    ID string
-    GroupID string
-    Name string
-    Address string
-    Port int
-    Username string
-    Password string
+    ID                string
+    GroupID           string
+    Name              string
+    Address           string
+    Port              int
+    Username          string
+    Password          string
+    PasswordIsCommand bool
 }
 
 type OutputConnection struct {
