@@ -22,13 +22,20 @@ import (
 
 func main() {
     var all bool
+    var groupByVault bool
     var outputFile string
     var password string
     var open bool
     const allUsage = "Export all connections, without interactive input"
+    const groupByVaultUsage = "Create a group for each vault of the exported items"
     const outputUsage = "Output filename"
     const passwordUsage = "Export password"
     const openUsage = "Open the export immediately"
+
+    flag.BoolVar(&all, "all", false, allUsage)
+    flag.BoolVar(&all, "a", false, allUsage + " (shorthand)")
+
+    flag.BoolVar(&groupByVault, "group-by-vault", false, groupByVaultUsage)
 
     flag.StringVar(&outputFile, "output", "export", outputUsage)
     flag.StringVar(&outputFile, "o", "export", outputUsage + " (shorthand)")
@@ -36,7 +43,6 @@ func main() {
     flag.StringVar(&password, "password", "password", passwordUsage)
     flag.StringVar(&password, "p", "password", passwordUsage + " (shorthand)")
 
-    flag.BoolVar(&all, "all", false, allUsage)
     flag.BoolVar(&open, "open", false, openUsage)
     flag.Parse()
 
@@ -93,11 +99,24 @@ func main() {
         }
     }
 
-    out := convertConnections(exportable)
+    var jsonString []byte
 
-    jsonString, err := json.MarshalIndent(out, "", "  ")
-    if (err != nil) {
-        panic(err)
+    if groupByVault {
+        out := convertGroupedConnections(exportable, vaults)
+
+        jsonString, err = json.MarshalIndent(out, "", "  ")
+
+        if (err != nil) {
+            panic(err)
+        }
+    } else {
+        out := convertConnections(exportable)
+
+        jsonString, err = json.MarshalIndent(out, "", "  ")
+
+        if (err != nil) {
+            panic(err)
+        }
     }
 
     encrypted, err := rncryptor.Encrypt(password, jsonString)
@@ -292,6 +311,33 @@ func convertConnections(in []*AvailableConnection) []*OutputConnection {
     return out
 }
 
+func convertGroupedConnections(in []*AvailableConnection, groups []*onepassword.Vault) []*OutputGroup {
+    var out []*OutputGroup
+    grouped := make(map[string][]*AvailableConnection)
+    groupNames := make(map[string]string, len(groups))
+
+    for _, group := range groups {
+        groupNames[group.ID] = group.Title
+    }
+
+    for _, connection := range in {
+        if connection.GroupID == "" {
+            continue
+        }
+
+        grouped[connection.GroupID] = append(grouped[connection.GroupID], connection)
+    }
+
+    for groupID, connections := range grouped {
+        out = append(out, &OutputGroup{
+            Name: groupNames[groupID],
+            Connections: convertConnections(connections),
+        })
+    }
+
+    return out
+}
+
 func openWithApp(app, target string) error {
     if runtime.GOOS != "darwin" {
         return fmt.Errorf("openWithApp is only implemented for macOS")
@@ -365,4 +411,11 @@ type OutputConnection struct {
     DatabaseKeyPassword       string                 `json:"DatabaseKeyPassword"`
     SafeModeLevel             int                    `json:"SafeModeLevel"`
     ReadIntentOnly            int                    `json:"ReadIntentOnly"`
+}
+
+type OutputGroup struct {
+    Name        string              `json:"Name"`
+    IsExpaned   bool                `json:"IsExpaned"`
+    Connections []*OutputConnection `json:"connections"`
+    Groups      []int               `json:"groups"`
 }
