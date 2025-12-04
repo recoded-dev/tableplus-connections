@@ -6,41 +6,93 @@ import (
     "errors"
     "flag"
     "fmt"
+    "maps"
     "os"
     "os/exec"
     "runtime"
+    "slices"
     "strconv"
 
     "github.com/1password/onepassword-sdk-go"
     "github.com/RNCryptor/RNCryptor-go"
+
+    "tableplus-connections/ui"
 )
 
 func main() {
+    var all bool
     var outputFile string
     var password string
-	const outputUsage = "Output filename"
-	const passwordUsage = "Export password"
+    var open bool
+    const allUsage = "Export all connections, without interactive input"
+    const outputUsage = "Output filename"
+    const passwordUsage = "Export password"
+    const openUsage = "Open the export immediately"
 
     flag.StringVar(&outputFile, "output", "export", outputUsage)
     flag.StringVar(&outputFile, "o", "export", outputUsage + " (shorthand)")
 
     flag.StringVar(&password, "password", "password", passwordUsage)
     flag.StringVar(&password, "p", "password", passwordUsage + " (shorthand)")
+
+    flag.BoolVar(&all, "all", false, allUsage)
+    flag.BoolVar(&open, "open", false, openUsage)
     flag.Parse()
 
-    items, err := getDatabaseItems()
+    items, vaults, err := getDatabaseItems()
 
     if (err != nil) {
         panic(err);
     }
 
-    connections, err := parseAvailableConnections(items)
+    connections, groups, err := parseAvailableConnections(items, vaults)
 
     if (err != nil) {
         panic(err);
     }
 
-    out := convertConnections(connections)
+    var exportable []*AvailableConnection
+
+    if all {
+        exportable = connections
+    } else {
+        var selectable []ui.Item
+
+        for _, connection := range connections {
+            selectable = append(selectable, ui.Item{
+                ID: connection.ID,
+                TitleText: connection.Name,
+                DescriptionText: connection.Address,
+                GroupID: connection.GroupID,
+                Selected: true,
+            })
+        }
+
+        selected, err := ui.Run(selectable, groups)
+
+        if err != nil {
+            if errors.Is(err, ui.ErrAborted) {
+                fmt.Println(err.Error())
+                os.Exit(1)
+            }
+
+            panic(err)
+        }
+
+        var selectedIds []string
+
+        for _, item := range selected {
+            selectedIds = append(selectedIds, item.ID)
+        }
+
+        for _, connection := range connections {
+            if slices.Contains(selectedIds, connection.ID) {
+                exportable = append(exportable, connection)
+            }
+        }
+    }
+
+    out := convertConnections(exportable)
 
     jsonString, err := json.MarshalIndent(out, "", "  ")
     if (err != nil) {
@@ -59,20 +111,24 @@ func main() {
         panic(err)
     }
 
-    fmt.Println("Exported")
+    if open {
+        fmt.Println("Opening")
 
-    err = openWithApp("TablePlus", outputFile + ".tableplusconnection")
+        err = openWithApp("TablePlus", outputFile + ".tableplusconnection")
 
-    if (err != nil) {
-        panic(err)
+        if (err != nil) {
+            panic(err)
+        }
+    } else {
+        fmt.Println("Exported")
     }
 }
 
-func getDatabaseItems() ([]*onepassword.Item, error) {
+func getDatabaseItems() ([]*onepassword.Item, []*onepassword.Vault, error) {
     accountName := flag.Arg(0);
 
     if (accountName == "") {
-        return nil, errors.New("Account name is required as the first argument")
+        return nil, nil, errors.New("Account name is required as the first argument")
     }
 
     client, err := onepassword.NewClient(
@@ -82,22 +138,23 @@ func getDatabaseItems() ([]*onepassword.Item, error) {
     )
 
     if err != nil {
-        return nil, err
+        return nil, nil, err
     }
 
-    vaults, err := client.Vaults().List(context.Background())
+    vaultOverviews, err := client.Vaults().List(context.Background())
 
     if err != nil {
-        return nil, err
+        return nil, nil, err
     }
 
     var databaseItems []*onepassword.Item
+    vaults := make(map[string]*onepassword.Vault)
 
-    for _, vault := range vaults {
+    for _, vault := range vaultOverviews {
         itemOverviews, err := client.Items().List(context.Background(), vault.ID)
 
         if err != nil {
-            return nil, err
+            return nil, nil, err
         }
 
         var vaultDatabaseItemOverviewIds []string
@@ -105,6 +162,16 @@ func getDatabaseItems() ([]*onepassword.Item, error) {
         for _, itemOverview := range itemOverviews {
             if itemOverview.Category == onepassword.ItemCategoryDatabase {
                 vaultDatabaseItemOverviewIds = append(vaultDatabaseItemOverviewIds, itemOverview.ID)
+
+                if _, contains := vaults[itemOverview.VaultID]; !contains {
+                    actualVault, err := client.Vaults().Get(context.Background(), itemOverview.VaultID, onepassword.VaultGetParams{});
+
+                    if err != nil {
+                        panic(err)
+                    }
+
+                    vaults[itemOverview.VaultID] = &actualVault
+                }
             }
         }
 
@@ -112,18 +179,27 @@ func getDatabaseItems() ([]*onepassword.Item, error) {
 
         for _, item := range items.IndividualResponses {
             if (item.Error != nil) {
-                return nil, errors.New(string(item.Error.Internal()))
+                return nil, nil, errors.New(string(item.Error.Internal()))
             }
 
             databaseItems = append(databaseItems, item.Content)
         }
     }
 
-    return databaseItems, nil
+    return databaseItems, slices.Collect(maps.Values(vaults)), nil
 }
 
-func parseAvailableConnections(items []*onepassword.Item) ([]*AvailableConnection, error) {
+func parseAvailableConnections(items []*onepassword.Item, vaults []*onepassword.Vault) ([]*AvailableConnection, []*ui.Group, error) {
     var availableConnections []*AvailableConnection
+    var groups []*ui.Group
+
+    for _, vault := range vaults {
+        groups = append(groups, &ui.Group{
+            ID:          vault.ID,
+            Name:        vault.Title,
+            Description: "Idk",
+        })
+    }
 
     for _, item := range items {
         var address *string
@@ -158,6 +234,8 @@ func parseAvailableConnections(items []*onepassword.Item) ([]*AvailableConnectio
         }
 
         availableConnections = append(availableConnections, &AvailableConnection{
+            ID: item.ID,
+            GroupID: item.VaultID,
             Name: item.Title,
             Address: *address,
             Port: *port,
@@ -166,7 +244,7 @@ func parseAvailableConnections(items []*onepassword.Item) ([]*AvailableConnectio
         })
     }
 
-    return availableConnections, nil
+    return availableConnections, groups, nil
 }
 
 func convertConnections(in []*AvailableConnection) []*OutputConnection {
@@ -203,18 +281,20 @@ func convertConnections(in []*AvailableConnection) []*OutputConnection {
 }
 
 func openWithApp(app, target string) error {
-	if runtime.GOOS != "darwin" {
-		return fmt.Errorf("openWithApp is only implemented for macOS")
-	}
+    if runtime.GOOS != "darwin" {
+        return fmt.Errorf("openWithApp is only implemented for macOS")
+    }
 
-	cmd := exec.Command("open", "-a", app, target)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+    cmd := exec.Command("open", "-a", app, target)
+    cmd.Stdout = os.Stdout
+    cmd.Stderr = os.Stderr
 
-	return cmd.Run()
+    return cmd.Run()
 }
 
 type AvailableConnection struct {
+    ID string
+    GroupID string
     Name string
     Address string
     Port int
