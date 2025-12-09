@@ -20,6 +20,8 @@ import (
     "tableplus-connections/ui"
 )
 
+var version = "development"
+
 func main() {
     var all bool
     var groupByVault bool
@@ -154,7 +156,7 @@ func getDatabaseItems() ([]*onepassword.Item, []*onepassword.Vault, error) {
     client, err := onepassword.NewClient(
         context.Background(),
         onepassword.WithDesktopAppIntegration(accountName),
-        onepassword.WithIntegrationInfo("TablePlus connections", "v0.1.0"),
+        onepassword.WithIntegrationInfo("TablePlus connections", version),
     )
 
     if err != nil {
